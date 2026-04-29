@@ -1,0 +1,92 @@
+name: CI - Main (Build, Test, Sonar & Package)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
+  checks: write
+
+jobs:
+  build-test-sonar:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: src
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Install SonarScanner
+      run: dotnet tool install --global dotnet-sonarscanner
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Begin SonarCloud analysis
+      run: |
+        dotnet sonarscanner begin \
+          /k:"shopisel_matchqueue-service" \
+          /o:"shopisel" \
+          /d:sonar.login="${{ secrets.SONAR_TOKEN }}" \
+          /d:sonar.host.url="https://sonarcloud.io" \
+          /d:sonar.cs.opencover.reportsPaths="TestResults/coverage.opencover.xml"
+
+    - name: Build
+      run: dotnet build --no-restore
+
+    - name: Test with coverage
+      run: |
+        dotnet test --no-build --verbosity normal \
+          /p:CollectCoverage=true \
+          /p:CoverletOutput=./TestResults/coverage.opencover.xml \
+          /p:CoverletOutputFormat=opencover
+
+    - name: End SonarCloud analysis
+      run: dotnet sonarscanner end /d:sonar.login="${{ secrets.SONAR_TOKEN }}"
+
+    # Docker: build & push para GitHub Container Registry
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract Docker metadata (tags & labels)
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository_owner }}/matchqueue-service
+        tags: |
+          type=sha,prefix=sha-
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./src
+        file: ./src/MatchQueueService/Dockerfile
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+
+    - name: Trigger CD no Repo de Deploy
+      # Só avisa o Render se for um push direto na main (ignora os pull requests)
+      if: github.event_name != 'pull_request'
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ secrets.GH_PAT_FOR_DISPATCH }}
+        repository: shopisel/deploy
+        event-type: deploy-matchqueue-service
+
