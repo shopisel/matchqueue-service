@@ -15,10 +15,6 @@ jobs:
   build-test-sonar:
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: src
-
     steps:
     - uses: actions/checkout@v4
 
@@ -31,7 +27,7 @@ jobs:
       run: dotnet tool install --global dotnet-sonarscanner
 
     - name: Restore dependencies
-      run: dotnet restore
+      run: dotnet restore ./matchqueue-service.sln
 
     - name: Begin SonarCloud analysis
       run: |
@@ -43,11 +39,11 @@ jobs:
           /d:sonar.cs.opencover.reportsPaths="TestResults/coverage.opencover.xml"
 
     - name: Build
-      run: dotnet build --no-restore
+      run: dotnet build ./matchqueue-service.sln --no-restore
 
     - name: Test with coverage
       run: |
-        dotnet test --no-build --verbosity normal \
+        dotnet test ./matchqueue-service.sln --no-build --verbosity normal \
           /p:CollectCoverage=true \
           /p:CoverletOutput=./TestResults/coverage.opencover.xml \
           /p:CoverletOutputFormat=opencover
@@ -89,4 +85,3 @@ jobs:
         token: ${{ secrets.GH_PAT_FOR_DISPATCH }}
         repository: shopisel/deploy
         event-type: deploy-matchqueue-service
-

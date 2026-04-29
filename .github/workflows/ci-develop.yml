@@ -10,10 +10,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: src
-
     steps:
     - uses: actions/checkout@v4
 
@@ -23,15 +19,14 @@ jobs:
         dotnet-version: 10.0.x
 
     - name: Restore dependencies
-      run: dotnet restore
+      run: dotnet restore ./matchqueue-service.sln
     
     - name: Build
-      run: dotnet build --no-restore
+      run: dotnet build ./matchqueue-service.sln --no-restore
 
     - name: Test with coverage
       run: |
-        dotnet test --verbosity normal \
+        dotnet test ./matchqueue-service.sln --verbosity normal \
           /p:CollectCoverage=true \
           /p:CoverletOutput=./TestResults/coverage.opencover.xml \
           /p:CoverletOutputFormat=opencover
-
