@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using MongoDB.Driver;
+using System.Security.Authentication;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -36,7 +37,15 @@ if (string.IsNullOrWhiteSpace(mongoDatabaseName))
     mongoDatabaseName = "shopisel_scraper";
 }
 
-builder.Services.AddSingleton<IMongoClient>(_ => new MongoClient(mongoConnectionString));
+builder.Services.AddSingleton<IMongoClient>(_ =>
+{
+    var settings = MongoClientSettings.FromConnectionString(mongoConnectionString);
+    settings.SslSettings = new SslSettings
+    {
+        EnabledSslProtocols = SslProtocols.Tls12
+    };
+    return new MongoClient(settings);
+});
 builder.Services.AddSingleton<IMongoDatabase>(sp =>
     sp.GetRequiredService<IMongoClient>().GetDatabase(mongoDatabaseName));
 
