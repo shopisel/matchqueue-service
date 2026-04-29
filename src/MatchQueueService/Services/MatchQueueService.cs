@@ -21,9 +21,18 @@ public sealed class MatchQueueService(
         var startedAt = NormalizeToUtc(request.StartedAt);
         var finishedAt = NormalizeToUtc(request.FinishedAt);
 
+        using var scope = logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["started_at"] = startedAt,
+            ["finished_at"] = finishedAt
+        });
+
+        logger.LogInformation("Match processing started.");
+
         var runId = await ResolveRunIdAsync(startedAt, finishedAt, ct);
         if (runId is null)
         {
+            logger.LogWarning("No scrape run found for provided timestamps.");
             throw new InvalidOperationException(
                 $"No scrape run found for started_at={startedAt:o} finished_at={finishedAt:o}.");
         }
@@ -118,12 +127,22 @@ public sealed class MatchQueueService(
 
         await dbContext.SaveChangesAsync(ct);
 
-        return new TriggerMatchResponse(
+        var response = new TriggerMatchResponse(
             runId,
             productsProcessed,
             productsCreated,
             pricesUpserted,
             notificationsEnqueued);
+
+        logger.LogInformation(
+            "Match processing completed. run_id={RunId} processed={Processed} created={Created} prices_upserted={PricesUpserted} notifications_enqueued={NotificationsEnqueued}",
+            response.RunId,
+            response.ProductsProcessed,
+            response.ProductsCreated,
+            response.PricesUpserted,
+            response.NotificationsEnqueued);
+
+        return response;
     }
 
     private async Task<string?> ResolveRunIdAsync(DateTime startedAtUtc, DateTime finishedAtUtc, CancellationToken ct)

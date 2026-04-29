@@ -1,6 +1,8 @@
 using MatchQueueService.Data;
 using MatchQueueService.Endpoints;
 using MatchQueueService.Services;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using MongoDB.Driver;
 
@@ -8,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
+builder.Services.AddProblemDetails();
 
 var connectionString = builder.Configuration.GetConnectionString("MatchQueueService");
 if (string.IsNullOrWhiteSpace(connectionString))
@@ -40,6 +43,36 @@ builder.Services.AddSingleton<IMongoDatabase>(sp =>
 builder.Services.AddScoped<IMatchQueueService, MatchQueueService.Services.MatchQueueService>();
 
 var app = builder.Build();
+
+app.UseExceptionHandler(exceptionApp =>
+{
+    exceptionApp.Run(async context =>
+    {
+        var logger = context.RequestServices
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("MatchQueueService.UnhandledException");
+
+        var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+        if (exception is not null)
+        {
+            logger.LogError(exception, "Unhandled exception while processing request.");
+        }
+
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/problem+json";
+
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status500InternalServerError,
+            Title = "Internal Server Error",
+            Detail = "An unexpected error occurred.",
+            Instance = context.Request.Path
+        };
+        problem.Extensions["traceId"] = context.TraceIdentifier;
+
+        await context.Response.WriteAsJsonAsync(problem);
+    });
+});
 
 if (app.Environment.IsDevelopment())
 {
