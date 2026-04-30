@@ -56,12 +56,13 @@ public sealed class MatchQueueService(
 
             var name = product.ExternalName.Trim();
             var storeId = product.StoreId.Trim();
+            var imageUrl = (product.ImageUrl ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(storeId))
             {
                 continue;
             }
 
-            var existing = await FindMatchAsync(name, storeId, ct);
+            var existing = await FindMatchAsync(name, storeId, imageUrl, ct);
 
             if (existing is null)
             {
@@ -73,7 +74,7 @@ public sealed class MatchQueueService(
                     Name = name,
                     Barcode = string.Empty,
                     CategoryId = categoryId,
-                    Image = product.ImageUrl ?? string.Empty
+                    Image = imageUrl
                 };
 
                 var createdPrice = new PriceEntity
@@ -104,7 +105,7 @@ public sealed class MatchQueueService(
 
             pricesUpserted++;
 
-            if (SaleChanged(previousSale, existing.Sale))
+            if (HasNewOrChangedSale(previousSale, existing.Sale))
             {
                 var accounts = await dbContext.FavoriteProducts
                     .Where(favorite => favorite.ProductId == existing.ProductId)
@@ -218,22 +219,20 @@ public sealed class MatchQueueService(
         return result;
     }
 
-    private async Task<PriceEntity?> FindMatchAsync(string name, string storeId, CancellationToken ct)
+    private async Task<PriceEntity?> FindMatchAsync(string name, string storeId, string imageUrl, CancellationToken ct)
     {
-        var productIds = await dbContext.Products
-            .Where(product => EF.Functions.ILike(product.Name, name))
-            .Select(product => product.Id)
-            .ToListAsync(ct);
-
-        if (productIds.Count == 0)
-        {
-            return null;
-        }
-
         return await dbContext.Prices
-            .FirstOrDefaultAsync(
-                price => productIds.Contains(price.ProductId) && price.StoreId == storeId,
-                ct);
+            .Join(
+                dbContext.Products,
+                price => price.ProductId,
+                product => product.Id,
+                (price, product) => new { price, product })
+            .Where(row =>
+                row.price.StoreId == storeId &&
+                EF.Functions.ILike(row.product.Name, name) &&
+                row.product.Image == imageUrl)
+            .Select(row => row.price)
+            .FirstOrDefaultAsync(ct);
     }
 
     private async Task<string> ResolveCategoryIdAsync(string? scrapedCategoryId, CancellationToken ct)
@@ -274,19 +273,19 @@ public sealed class MatchQueueService(
         };
     }
 
-    private static bool SaleChanged(decimal? before, decimal? after)
+    private static bool HasNewOrChangedSale(decimal? before, decimal? after)
     {
-        if (!before.HasValue && !after.HasValue)
+        if (!after.HasValue || after.Value <= 0)
         {
             return false;
         }
 
-        if (before.HasValue != after.HasValue)
+        if (!before.HasValue)
         {
             return true;
         }
 
-        return before!.Value != after!.Value;
+        return before.Value != after.Value;
     }
 
     private static decimal ReadDecimal(BsonDocument doc, string key)
