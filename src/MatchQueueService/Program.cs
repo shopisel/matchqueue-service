@@ -4,6 +4,7 @@ using MatchQueueService.Services;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using MongoDB.Driver;
 using System.Security.Authentication;
 
@@ -22,7 +23,9 @@ if (string.IsNullOrWhiteSpace(connectionString))
 
 builder.Services.AddDbContext<MatchQueueDbContext>(options =>
 {
-    options.UseNpgsql(connectionString);
+    options
+        .UseNpgsql(connectionString)
+        .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
 });
 
 var mongoConnectionString = builder.Configuration["Mongo:ConnectionString"];
