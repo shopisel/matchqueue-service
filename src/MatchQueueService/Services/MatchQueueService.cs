@@ -240,15 +240,27 @@ public sealed class MatchQueueService(
     {
         if (!string.IsNullOrWhiteSpace(scrapedCategoryId))
         {
-            var exists = await dbContext.Categories
-                .AnyAsync(category => category.Id == scrapedCategoryId, ct);
-            if (exists)
+            var exists = dbContext.Categories.Local.Any(category => category.Id == scrapedCategoryId)
+                || await dbContext.Categories.AnyAsync(category => category.Id == scrapedCategoryId, ct);
+
+            if (!exists)
             {
-                return scrapedCategoryId;
+                dbContext.Categories.Add(new CategoryEntity { Id = scrapedCategoryId });
             }
+
+            return scrapedCategoryId;
         }
 
-        return "cat_uncategorized";
+        const string fallbackCategoryId = "cat_uncategorized";
+        var fallbackExists = dbContext.Categories.Local.Any(category => category.Id == fallbackCategoryId)
+            || await dbContext.Categories.AnyAsync(category => category.Id == fallbackCategoryId, ct);
+
+        if (!fallbackExists)
+        {
+            dbContext.Categories.Add(new CategoryEntity { Id = fallbackCategoryId });
+        }
+
+        return fallbackCategoryId;
     }
 
     private static DateTime NormalizeToUtc(DateTime value)

@@ -103,10 +103,23 @@ static async Task InitializeDatabaseAsync(WebApplication application)
     if (dbContext.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
     {
         await dbContext.Database.MigrateAsync();
+        await EnsureDefaultCategoryAsync(dbContext);
         return;
     }
 
     await dbContext.Database.EnsureCreatedAsync();
+    await EnsureDefaultCategoryAsync(dbContext);
+}
+
+static async Task EnsureDefaultCategoryAsync(MatchQueueDbContext dbContext)
+{
+    const string fallbackCategoryId = "cat_uncategorized";
+    var exists = await dbContext.Categories.AnyAsync(category => category.Id == fallbackCategoryId);
+    if (!exists)
+    {
+        dbContext.Categories.Add(new MatchQueueService.Data.Entities.CategoryEntity { Id = fallbackCategoryId });
+        await dbContext.SaveChangesAsync();
+    }
 }
 
 public partial class Program;

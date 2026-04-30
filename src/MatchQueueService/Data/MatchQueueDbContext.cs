@@ -51,6 +51,11 @@ public sealed class MatchQueueDbContext(DbContextOptions<MatchQueueDbContext> op
                 .HasColumnName("image")
                 .HasColumnType("varchar")
                 .IsRequired();
+
+            entity.HasOne<CategoryEntity>()
+                .WithMany()
+                .HasForeignKey(product => product.CategoryId)
+                .HasConstraintName("FK_products_categories_category_id");
         });
 
         modelBuilder.Entity<PriceEntity>(entity =>
