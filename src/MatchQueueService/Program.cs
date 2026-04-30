@@ -117,12 +117,107 @@ static async Task InitializeDatabaseAsync(WebApplication application)
 static async Task EnsureDefaultCategoryAsync(MatchQueueDbContext dbContext)
 {
     const string fallbackCategoryId = "cat_uncategorized";
-    var exists = await dbContext.Categories.AnyAsync(category => category.Id == fallbackCategoryId);
-    if (!exists)
+    const string fallbackCategoryName = "Uncategorized";
+    const string fallbackCategoryImage = "";
+
+    var categorySchema = await dbContext.Database.SqlQueryRaw<CategorySchemaInfo>(
+            """
+            SELECT
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'categories'
+                      AND column_name = 'name'
+                ) THEN true ELSE false END AS "HasName",
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'categories'
+                      AND column_name = 'image'
+                ) THEN true ELSE false END AS "HasImage",
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'categories'
+                      AND column_name = 'parent_category_id'
+                ) THEN true ELSE false END AS "HasParentCategoryId";
+            """)
+        .SingleAsync();
+
+    if (categorySchema.HasName && categorySchema.HasImage && categorySchema.HasParentCategoryId)
     {
-        dbContext.Categories.Add(new MatchQueueService.Data.Entities.CategoryEntity { Id = fallbackCategoryId });
-        await dbContext.SaveChangesAsync();
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO categories (id, name, image, parent_category_id)
+            SELECT {0}, {1}, {2}, NULL
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM categories
+                WHERE id = {0}
+            );
+            """,
+            fallbackCategoryId,
+            fallbackCategoryName,
+            fallbackCategoryImage);
+        return;
     }
+
+    if (categorySchema.HasName && categorySchema.HasImage)
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO categories (id, name, image)
+            SELECT {0}, {1}, {2}
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM categories
+                WHERE id = {0}
+            );
+            """,
+            fallbackCategoryId,
+            fallbackCategoryName,
+            fallbackCategoryImage);
+        return;
+    }
+
+    if (categorySchema.HasName)
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO categories (id, name)
+            SELECT {0}, {1}
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM categories
+                WHERE id = {0}
+            );
+            """,
+            fallbackCategoryId,
+            fallbackCategoryName);
+        return;
+    }
+
+    await dbContext.Database.ExecuteSqlRawAsync(
+        """
+        INSERT INTO categories (id)
+        SELECT {0}
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM categories
+            WHERE id = {0}
+        );
+        """,
+        fallbackCategoryId);
+}
+
+public sealed class CategorySchemaInfo
+{
+    public bool HasName { get; set; }
+    public bool HasImage { get; set; }
+    public bool HasParentCategoryId { get; set; }
 }
 
 public partial class Program;
