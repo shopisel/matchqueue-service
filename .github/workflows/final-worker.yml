@@ -1,0 +1,35 @@
+name: Final Worker (repository_dispatch)
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-worker:
+    name: Run final worker
+    runs-on: ubuntu-latest
+    env:
+      ConnectionStrings__MatchQueueService: ${{ secrets.MATCHQUEUE_CONNECTION_STRING }}
+      Mongo__ConnectionString: ${{ secrets.MONGO_CONNECTION_STRING }}
+      Mongo__Database: ${{ secrets.MONGO_DATABASE }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore ./matchqueue-service.sln
+
+      - name: Build
+        run: dotnet build ./matchqueue-service.sln --configuration Release --no-restore
+
+      - name: Run worker
+        run: dotnet run --project ./src/MatchQueueService/MatchQueueService.csproj --configuration Release --no-build -- --mode worker
+

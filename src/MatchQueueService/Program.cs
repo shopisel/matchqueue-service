@@ -7,6 +7,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using MongoDB.Driver;
 using System.Security.Authentication;
+using MatchQueueService.Worker;
+using System.Linq;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -56,6 +58,10 @@ builder.Services.AddScoped<IMatchQueueService, MatchQueueService.Services.MatchQ
 
 var app = builder.Build();
 
+var mode = GetArgValue(args, "--mode");
+var isWorker = string.Equals(mode, "worker", StringComparison.OrdinalIgnoreCase)
+    || args.Any(arg => string.Equals(arg, "worker", StringComparison.OrdinalIgnoreCase));
+
 app.UseExceptionHandler(exceptionApp =>
 {
     exceptionApp.Run(async context =>
@@ -95,6 +101,16 @@ app.UseHttpsRedirection();
 
 await InitializeDatabaseAsync(app);
 
+if (isWorker)
+{
+    var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("MatchQueueService.Worker");
+    logger.LogInformation("Starting GitHub repository_dispatch worker mode.");
+
+    var exitCode = await GitHubDispatchWorker.RunAsync(app.Services, args, app.Lifetime.ApplicationStopping);
+    Environment.ExitCode = exitCode;
+    return;
+}
+
 app.MapMatchQueueEndpoints();
 
 await app.RunAsync();
@@ -110,6 +126,25 @@ static async Task InitializeDatabaseAsync(WebApplication application)
     }
 
     await dbContext.Database.EnsureCreatedAsync();
+}
+
+static string? GetArgValue(string[] args, string name)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        var arg = args[i];
+        if (arg.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
+        {
+            return arg[(name.Length + 1)..];
+        }
+
+        if (string.Equals(arg, name, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+        {
+            return args[i + 1];
+        }
+    }
+
+    return null;
 }
 
 public partial class Program;

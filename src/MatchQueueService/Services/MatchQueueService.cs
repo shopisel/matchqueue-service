@@ -38,6 +38,33 @@ public sealed class MatchQueueService(
         }
 
         var scrapedProducts = await LoadProductsForRunAsync(runId, ct);
+        return await ProcessRunProductsAsync(runId, scrapedProducts, ct);
+    }
+
+    public async Task<TriggerMatchResponse> ProcessRunAsync(string runId, CancellationToken ct)
+    {
+        runId = (runId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            throw new ArgumentException("runId is required.", nameof(runId));
+        }
+
+        using var scope = logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["run_id"] = runId
+        });
+
+        logger.LogInformation("Match processing started (direct run_id).");
+
+        var scrapedProducts = await LoadProductsForRunAsync(runId, ct);
+        return await ProcessRunProductsAsync(runId, scrapedProducts, ct);
+    }
+
+    private async Task<TriggerMatchResponse> ProcessRunProductsAsync(
+        string runId,
+        List<ScrapeProduct> scrapedProducts,
+        CancellationToken ct)
+    {
         if (scrapedProducts.Count == 0)
         {
             logger.LogWarning("No scrape products found for run_id={RunId}.", runId);
