@@ -36,6 +36,8 @@ jobs:
       ConnectionStrings__MatchQueueService: ${{ secrets.MATCHQUEUE_CONNECTION_STRING }}
       Mongo__ConnectionString: ${{ secrets.MONGO_CONNECTION_STRING }}
       Mongo__Database: ${{ secrets.MONGO_DATABASE }}
+      MATCHQUEUE_FALLBACK_LATEST_RUN: true
+      MATCHQUEUE_LATEST_RUN_MAX_AGE_MINUTES: 120
 
     steps:
       - uses: actions/checkout@v4

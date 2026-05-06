@@ -4,6 +4,8 @@ using MatchQueueService.Contracts;
 using MatchQueueService.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using MongoDB.Bson;
+using MongoDB.Driver;
 
 namespace MatchQueueService.Worker;
 
@@ -150,9 +152,51 @@ public static class GitHubDispatchWorker
 
             if (startedAt is null || finishedAt is null)
             {
-                logger.LogError(
-                    "Payload must include either 'run_id' or both 'started_at' and 'finished_at'.");
-                return 2;
+                var allowLatestFallback = ReadBool(payload, "fallback_latest_run")
+                    ?? ReadEnvBool("MATCHQUEUE_FALLBACK_LATEST_RUN")
+                    ?? false;
+
+                if (!allowLatestFallback)
+                {
+                    logger.LogError(
+                        "Payload must include either 'run_id' or both 'started_at' and 'finished_at'.");
+                    return 2;
+                }
+
+                var maxAgeMinutes = ReadEnvInt("MATCHQUEUE_LATEST_RUN_MAX_AGE_MINUTES") ?? 60;
+
+                var mongoDatabase = scopedServices.GetService<IMongoDatabase>();
+                if (mongoDatabase is null)
+                {
+                    logger.LogError(
+                        "MATCHQUEUE_FALLBACK_LATEST_RUN enabled but IMongoDatabase is not registered.");
+                    return 2;
+                }
+
+                var latestRun = await TryResolveLatestRunAsync(mongoDatabase, maxAgeMinutes, ct);
+                if (latestRun is null)
+                {
+                    logger.LogError(
+                        "MATCHQUEUE_FALLBACK_LATEST_RUN enabled but no recent scrape_runs found within max_age_minutes={MaxAgeMinutes}.",
+                        maxAgeMinutes);
+                    return 2;
+                }
+
+                logger.LogWarning(
+                    "No run_id/timestamps provided; falling back to latest scrape run. run_id={RunId} started_at={StartedAt:o} finished_at={FinishedAt:o}",
+                    latestRun.RunId,
+                    latestRun.StartedAtUtc,
+                    latestRun.FinishedAtUtc);
+
+                var result = await matchQueueService.ProcessRunAsync(latestRun.RunId, ct);
+                logger.LogInformation(
+                    "Worker completed. run_id={RunId} processed={Processed} created={Created} prices_upserted={PricesUpserted} notifications_enqueued={NotificationsEnqueued}",
+                    result.RunId,
+                    result.ProductsProcessed,
+                    result.ProductsCreated,
+                    result.PricesUpserted,
+                    result.NotificationsEnqueued);
+                return 0;
             }
 
             var request = new TriggerMatchRequest(startedAt.Value, finishedAt.Value);
@@ -188,6 +232,28 @@ public static class GitHubDispatchWorker
         }
 
         return property.ValueKind == JsonValueKind.Object ? property : null;
+    }
+
+    private static bool? ReadEnvBool(string key)
+    {
+        var raw = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        return bool.TryParse(raw, out var parsed) ? parsed : null;
+    }
+
+    private static int? ReadEnvInt(string key)
+    {
+        var raw = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        return int.TryParse(raw, out var parsed) ? parsed : null;
     }
 
     private static string? ReadString(JsonElement obj, string propertyName)
@@ -260,4 +326,66 @@ public static class GitHubDispatchWorker
 
         return ReadDateTime(obj.Value, propertyName);
     }
+
+    private static async Task<LatestRun?> TryResolveLatestRunAsync(
+        IMongoDatabase mongoDatabase,
+        int maxAgeMinutes,
+        CancellationToken ct)
+    {
+        var runs = mongoDatabase.GetCollection<BsonDocument>("scrape_runs");
+
+        var now = DateTime.UtcNow;
+        var minFinishedAt = now.AddMinutes(-Math.Max(1, maxAgeMinutes));
+
+        var filter = Builders<BsonDocument>.Filter.And(
+            Builders<BsonDocument>.Filter.Ne("finished_at", BsonNull.Value),
+            Builders<BsonDocument>.Filter.Gte("finished_at", minFinishedAt));
+
+        var projection = Builders<BsonDocument>.Projection
+            .Include("_id")
+            .Include("started_at")
+            .Include("finished_at");
+
+        var doc = await runs
+            .Find(filter)
+            .Sort(Builders<BsonDocument>.Sort.Descending("finished_at"))
+            .Project(projection)
+            .Limit(1)
+            .FirstOrDefaultAsync(ct);
+
+        if (doc is null)
+        {
+            return null;
+        }
+
+        var runId = doc.GetValue("_id", BsonNull.Value).ToString();
+        if (string.IsNullOrWhiteSpace(runId) || runId == "BsonNull")
+        {
+            return null;
+        }
+
+        var startedAtUtc = TryGetUtc(doc, "started_at") ?? now;
+        var finishedAtUtc = TryGetUtc(doc, "finished_at") ?? now;
+
+        return new LatestRun(runId, startedAtUtc, finishedAtUtc);
+    }
+
+    private static DateTime? TryGetUtc(BsonDocument doc, string field)
+    {
+        if (!doc.TryGetValue(field, out var value) || value.IsBsonNull)
+        {
+            return null;
+        }
+
+        try
+        {
+            return value.ToUniversalTime();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private sealed record LatestRun(string RunId, DateTime StartedAtUtc, DateTime FinishedAtUtc);
 }
