@@ -98,22 +98,55 @@ public static class GitHubDispatchWorker
                 logger.LogWarning("Payload indicates upstream failures (any_failed=true). Continuing anyway.");
             }
 
-            var runId = ReadString(payload, "run_id");
+            var scrapers = ReadObject(payload, "scrapers");
+            var scrapersOutputs = ReadObject(scrapers, "outputs");
+
+            var runId =
+                ReadString(scrapersOutputs, "run_id")
+                ?? ReadString(scrapersOutputs, "runId")
+                ?? ReadString(payload, "run_id");
+
+            var startedAt =
+                ReadDateTime(scrapersOutputs, "started_at")
+                ?? ReadDateTime(scrapersOutputs, "startedAt")
+                ?? ReadDateTime(payload, "started_at")
+                ?? ReadDateTime(payload, "startedAt");
+
+            var finishedAt =
+                ReadDateTime(scrapersOutputs, "finished_at")
+                ?? ReadDateTime(scrapersOutputs, "finishedAt")
+                ?? ReadDateTime(payload, "finished_at")
+                ?? ReadDateTime(payload, "finishedAt");
+
             if (!string.IsNullOrWhiteSpace(runId))
             {
                 var result = await matchQueueService.ProcessRunAsync(runId!, ct);
-                logger.LogInformation(
-                    "Worker completed. run_id={RunId} processed={Processed} created={Created} prices_upserted={PricesUpserted} notifications_enqueued={NotificationsEnqueued}",
-                    result.RunId,
-                    result.ProductsProcessed,
-                    result.ProductsCreated,
-                    result.PricesUpserted,
-                    result.NotificationsEnqueued);
-                return 0;
-            }
+                if (result.ProductsProcessed > 0)
+                {
+                    logger.LogInformation(
+                        "Worker completed. run_id={RunId} processed={Processed} created={Created} prices_upserted={PricesUpserted} notifications_enqueued={NotificationsEnqueued}",
+                        result.RunId,
+                        result.ProductsProcessed,
+                        result.ProductsCreated,
+                        result.PricesUpserted,
+                        result.NotificationsEnqueued);
+                    return 0;
+                }
 
-            var startedAt = ReadDateTime(payload, "started_at") ?? ReadDateTime(payload, "startedAt");
-            var finishedAt = ReadDateTime(payload, "finished_at") ?? ReadDateTime(payload, "finishedAt");
+                if (startedAt is null || finishedAt is null)
+                {
+                    logger.LogWarning(
+                        "run_id provided but no products found and no started_at/finished_at provided; stopping. run_id={RunId}",
+                        runId);
+                    return 0;
+                }
+
+                logger.LogWarning(
+                    "run_id provided but no products found; falling back to timestamp-based trigger. run_id={RunId} started_at={StartedAt:o} finished_at={FinishedAt:o}",
+                    runId,
+                    startedAt.Value,
+                    finishedAt.Value);
+            }
 
             if (startedAt is null || finishedAt is null)
             {
@@ -136,6 +169,27 @@ public static class GitHubDispatchWorker
         }
     }
 
+    private static JsonElement? ReadObject(JsonElement? obj, string propertyName)
+    {
+        if (obj is null)
+        {
+            return null;
+        }
+
+        var value = obj.Value;
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!value.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        return property.ValueKind == JsonValueKind.Object ? property : null;
+    }
+
     private static string? ReadString(JsonElement obj, string propertyName)
     {
         if (!obj.TryGetProperty(propertyName, out var value))
@@ -149,6 +203,16 @@ public static class GitHubDispatchWorker
             JsonValueKind.Number => value.GetRawText(),
             _ => null
         };
+    }
+
+    private static string? ReadString(JsonElement? obj, string propertyName)
+    {
+        if (obj is null)
+        {
+            return null;
+        }
+
+        return ReadString(obj.Value, propertyName);
     }
 
     private static bool? ReadBool(JsonElement obj, string propertyName)
@@ -185,5 +249,15 @@ public static class GitHubDispatchWorker
         }
 
         return null;
+    }
+
+    private static DateTime? ReadDateTime(JsonElement? obj, string propertyName)
+    {
+        if (obj is null)
+        {
+            return null;
+        }
+
+        return ReadDateTime(obj.Value, propertyName);
     }
 }
