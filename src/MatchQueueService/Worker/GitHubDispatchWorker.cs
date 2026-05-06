@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Linq;
 using MatchQueueService.Contracts;
 using MatchQueueService.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -41,22 +42,63 @@ public static class GitHubDispatchWorker
 
         using (doc)
         {
-            if (!doc.RootElement.TryGetProperty("client_payload", out var clientPayload)
-                || clientPayload.ValueKind is not JsonValueKind.Object)
+            var eventName = Environment.GetEnvironmentVariable("GITHUB_EVENT_NAME");
+
+            JsonElement? payloadObject = null;
+
+            if (doc.RootElement.TryGetProperty("client_payload", out var clientPayload)
+                && clientPayload.ValueKind is JsonValueKind.Object)
             {
-                logger.LogError("Missing github.event.client_payload on repository_dispatch payload.");
+                payloadObject = clientPayload;
+            }
+            else if (doc.RootElement.TryGetProperty("inputs", out var inputs)
+                && inputs.ValueKind is JsonValueKind.Object)
+            {
+                payloadObject = inputs;
+            }
+
+            var matchQueueService = scopedServices.GetRequiredService<IMatchQueueService>();
+
+            if (doc.RootElement.TryGetProperty("workflow_run", out var workflowRun)
+                && workflowRun.ValueKind is JsonValueKind.Object)
+            {
+                var workflowRunId = ReadString(workflowRun, "id");
+                if (!string.IsNullOrWhiteSpace(workflowRunId))
+                {
+                    var result = await matchQueueService.ProcessRunAsync(workflowRunId!, ct);
+                    logger.LogInformation(
+                        "Worker completed. run_id={RunId} processed={Processed} created={Created} prices_upserted={PricesUpserted} notifications_enqueued={NotificationsEnqueued}",
+                        result.RunId,
+                        result.ProductsProcessed,
+                        result.ProductsCreated,
+                        result.PricesUpserted,
+                        result.NotificationsEnqueued);
+                    return 0;
+                }
+            }
+
+            if (payloadObject is null)
+            {
+                var keys = string.Join(
+                    ",",
+                    doc.RootElement.EnumerateObject().Select(p => p.Name).Take(25));
+
+                logger.LogError(
+                    "Unsupported GitHub event payload (missing client_payload/inputs/workflow_run.id). event_name={EventName} keys={Keys}",
+                    eventName ?? "<null>",
+                    keys);
                 return 2;
             }
 
-            var anyFailed = ReadBool(clientPayload, "any_failed") ?? false;
+            var payload = payloadObject.Value;
+
+            var anyFailed = ReadBool(payload, "any_failed") ?? false;
             if (anyFailed)
             {
                 logger.LogWarning("Payload indicates upstream failures (any_failed=true). Continuing anyway.");
             }
 
-            var matchQueueService = scopedServices.GetRequiredService<IMatchQueueService>();
-
-            var runId = ReadString(clientPayload, "run_id");
+            var runId = ReadString(payload, "run_id");
             if (!string.IsNullOrWhiteSpace(runId))
             {
                 var result = await matchQueueService.ProcessRunAsync(runId!, ct);
@@ -70,8 +112,8 @@ public static class GitHubDispatchWorker
                 return 0;
             }
 
-            var startedAt = ReadDateTime(clientPayload, "started_at") ?? ReadDateTime(clientPayload, "startedAt");
-            var finishedAt = ReadDateTime(clientPayload, "finished_at") ?? ReadDateTime(clientPayload, "finishedAt");
+            var startedAt = ReadDateTime(payload, "started_at") ?? ReadDateTime(payload, "startedAt");
+            var finishedAt = ReadDateTime(payload, "finished_at") ?? ReadDateTime(payload, "finishedAt");
 
             if (startedAt is null || finishedAt is null)
             {

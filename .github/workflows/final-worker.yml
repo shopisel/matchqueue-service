@@ -3,6 +3,27 @@ name: Final Worker (repository_dispatch)
 on:
   repository_dispatch:
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Upstream orchestrator run id to process"
+        required: false
+        type: string
+        default: ""
+      started_at:
+        description: "UTC datetime or unix seconds (optional)"
+        required: false
+        type: string
+        default: ""
+      finished_at:
+        description: "UTC datetime or unix seconds (optional)"
+        required: false
+        type: string
+        default: ""
+      any_failed:
+        description: "Continue even if upstream failed"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,4 +53,3 @@ jobs:
 
       - name: Run worker
         run: dotnet run --project ./src/MatchQueueService/MatchQueueService.csproj --configuration Release --no-build -- --mode worker
-
