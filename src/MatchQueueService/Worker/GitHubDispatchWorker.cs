@@ -10,7 +10,10 @@ public static class GitHubDispatchWorker
 {
     public static async Task<int> RunAsync(IServiceProvider services, string[] args, CancellationToken ct)
     {
-        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
+        using var scope = services.CreateScope();
+        var scopedServices = scope.ServiceProvider;
+
+        var loggerFactory = scopedServices.GetRequiredService<ILoggerFactory>();
         var logger = loggerFactory.CreateLogger("MatchQueueService.Worker.GitHubDispatch");
 
         var eventPath = Environment.GetEnvironmentVariable("GITHUB_EVENT_PATH");
@@ -51,7 +54,7 @@ public static class GitHubDispatchWorker
                 logger.LogWarning("Payload indicates upstream failures (any_failed=true). Continuing anyway.");
             }
 
-            var matchQueueService = services.GetRequiredService<IMatchQueueService>();
+            var matchQueueService = scopedServices.GetRequiredService<IMatchQueueService>();
 
             var runId = ReadString(clientPayload, "run_id");
             if (!string.IsNullOrWhiteSpace(runId))
