@@ -110,6 +110,11 @@ public sealed class MatchQueueDbContext(DbContextOptions<MatchQueueDbContext> op
             entity.HasIndex(price => new { price.ProductId, price.StoreId })
                 .IsUnique()
                 .HasDatabaseName("UX_prices_product_store");
+
+            entity.HasOne<ProductEntity>()
+                .WithMany()
+                .HasForeignKey(price => price.ProductId)
+                .HasConstraintName("FK_prices_products_product_id");
         });
 
         modelBuilder.Entity<FavoriteProductEntity>(entity =>
