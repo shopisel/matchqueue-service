@@ -99,6 +99,7 @@ public sealed class MatchQueueService(
                 {
                     Id = Guid.NewGuid().ToString("N"),
                     Name = name,
+                    Brand = (product.Brand ?? string.Empty).Trim() is { Length: > 0 } brand ? brand : null,
                     Barcode = string.Empty,
                     CategoryId = categoryId,
                     Image = imageUrl
@@ -109,8 +110,10 @@ public sealed class MatchQueueService(
                     Id = Guid.NewGuid().ToString("N"),
                     ProductId = createdProduct.Id,
                     StoreId = storeId,
-                    Price = product.Price,
-                    Sale = product.Sale,
+                    PriceText = product.PriceText,
+                    SaleText = product.SaleText,
+                    QuantityText = product.QuantityText,
+                    UnitPriceText = product.UnitPriceText,
                     SaleDate = product.PromotionExpiryDate,
                     UpdatedAt = DateTime.UtcNow
                 };
@@ -123,16 +126,18 @@ public sealed class MatchQueueService(
                 continue;
             }
 
-            var previousSale = existing.Sale;
+            var previousSaleText = existing.SaleText;
 
-            existing.Price = product.Price;
-            existing.Sale = product.Sale;
+            existing.PriceText = product.PriceText;
+            existing.SaleText = product.SaleText;
+            existing.QuantityText = product.QuantityText;
+            existing.UnitPriceText = product.UnitPriceText;
             existing.SaleDate = product.PromotionExpiryDate;
             existing.UpdatedAt = DateTime.UtcNow;
 
             pricesUpserted++;
 
-            if (HasNewOrChangedSale(previousSale, existing.Sale))
+            if (HasNewOrChangedSale(previousSaleText, existing.SaleText))
             {
                 var accounts = await dbContext.FavoriteProducts
                     .Where(favorite => favorite.ProductId == existing.ProductId)
@@ -229,8 +234,11 @@ public sealed class MatchQueueService(
                 continue;
             }
 
-            var price = ReadDecimal(doc, "price");
-            var sale = ReadNullableDecimal(doc, "sale");
+            var priceText = (doc.GetValue("price_text", string.Empty).ToString() ?? string.Empty).Trim();
+            var saleText = ReadNullableString(doc, "sale_text");
+            var quantityText = ReadNullableString(doc, "quantity_text");
+            var unitPriceText = ReadNullableString(doc, "unit_price_text");
+            var brand = ReadNullableString(doc, "brand");
             var promotionExpiryDate = ReadNullableDate(doc, "promotion_expiry_date");
 
             result.Add(new ScrapeProduct(
@@ -238,8 +246,11 @@ public sealed class MatchQueueService(
                 storeId,
                 doc.GetValue("category_id", string.Empty).AsString,
                 doc.GetValue("image_url", string.Empty).AsString,
-                price,
-                sale,
+                priceText,
+                saleText,
+                quantityText,
+                unitPriceText,
+                brand,
                 promotionExpiryDate));
         }
 
@@ -300,8 +311,11 @@ public sealed class MatchQueueService(
         };
     }
 
-    private static bool HasNewOrChangedSale(decimal? before, decimal? after)
+    private static bool HasNewOrChangedSale(string? beforeSaleText, string? afterSaleText)
     {
+        var before = TryReadEuroDecimal(beforeSaleText);
+        var after = TryReadEuroDecimal(afterSaleText);
+
         if (!after.HasValue || after.Value <= 0)
         {
             return false;
@@ -315,29 +329,42 @@ public sealed class MatchQueueService(
         return before.Value != after.Value;
     }
 
-    private static decimal ReadDecimal(BsonDocument doc, string key)
+    private static decimal? TryReadEuroDecimal(string? value)
     {
-        var value = doc.GetValue(key, 0m);
-        return value switch
+        if (string.IsNullOrWhiteSpace(value))
         {
-            BsonDecimal128 decimal128 => (decimal)decimal128.AsDecimal,
-            BsonDouble bsonDouble => (decimal)bsonDouble.AsDouble,
-            BsonInt32 bsonInt32 => bsonInt32.AsInt32,
-            BsonInt64 bsonInt64 => bsonInt64.AsInt64,
-            _ => decimal.TryParse(value.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed)
-                ? parsed
-                : 0m
-        };
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        var euroIndex = trimmed.IndexOf('€');
+        var numberPart = euroIndex >= 0 ? trimmed[..euroIndex] : trimmed;
+        numberPart = numberPart.Trim();
+
+        if (numberPart.Length == 0)
+        {
+            return null;
+        }
+
+        if (decimal.TryParse(numberPart, NumberStyles.Number, CultureInfo.GetCultureInfo("pt-PT"), out var parsedPt))
+        {
+            return parsedPt;
+        }
+
+        return decimal.TryParse(numberPart, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedInvariant)
+            ? parsedInvariant
+            : null;
     }
 
-    private static decimal? ReadNullableDecimal(BsonDocument doc, string key)
+    private static string? ReadNullableString(BsonDocument doc, string key)
     {
         if (!doc.TryGetValue(key, out var value) || value.IsBsonNull)
         {
             return null;
         }
 
-        return ReadDecimal(doc, key);
+        var text = (value.ToString() ?? string.Empty).Trim();
+        return text.Length == 0 ? null : text;
     }
 
     private static DateTime? ReadNullableDate(BsonDocument doc, string key)
@@ -363,7 +390,10 @@ public sealed class MatchQueueService(
         string StoreId,
         string CategoryId,
         string? ImageUrl,
-        decimal Price,
-        decimal? Sale,
+        string PriceText,
+        string? SaleText,
+        string? QuantityText,
+        string? UnitPriceText,
+        string? Brand,
         DateTime? PromotionExpiryDate);
 }

@@ -81,18 +81,23 @@ namespace MatchQueueService.Data.Migrations
                         .HasColumnType("varchar")
                         .HasColumnName("id");
 
-                    b.Property<decimal>("Price")
-                        .HasColumnType("numeric(10,2)")
-                        .HasColumnName("price");
+                    b.Property<string>("PriceText")
+                        .IsRequired()
+                        .HasColumnType("varchar")
+                        .HasColumnName("price_text");
 
                     b.Property<string>("ProductId")
                         .IsRequired()
                         .HasColumnType("varchar")
                         .HasColumnName("product_id");
 
-                    b.Property<decimal?>("Sale")
-                        .HasColumnType("numeric(10,2)")
-                        .HasColumnName("sale");
+                    b.Property<string>("QuantityText")
+                        .HasColumnType("varchar")
+                        .HasColumnName("quantity_text");
+
+                    b.Property<string>("SaleText")
+                        .HasColumnType("varchar")
+                        .HasColumnName("sale_text");
 
                     b.Property<DateTime?>("SaleDate")
                         .HasColumnType("timestamp with time zone")
@@ -102,6 +107,10 @@ namespace MatchQueueService.Data.Migrations
                         .IsRequired()
                         .HasColumnType("varchar")
                         .HasColumnName("store_id");
+
+                    b.Property<string>("UnitPriceText")
+                        .HasColumnType("varchar")
+                        .HasColumnName("unit_price_text");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -126,6 +135,10 @@ namespace MatchQueueService.Data.Migrations
                         .IsRequired()
                         .HasColumnType("varchar")
                         .HasColumnName("barcode");
+
+                    b.Property<string>("Brand")
+                        .HasColumnType("varchar")
+                        .HasColumnName("brand");
 
                     b.Property<string>("CategoryId")
                         .IsRequired()
