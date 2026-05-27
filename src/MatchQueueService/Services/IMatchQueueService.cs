@@ -6,4 +6,5 @@ public interface IMatchQueueService
 {
     Task<TriggerMatchResponse> ProcessAsync(TriggerMatchRequest request, CancellationToken ct);
     Task<TriggerMatchResponse> ProcessRunAsync(string runId, CancellationToken ct);
+    Task<TriggerMatchResponse> ProcessWorkerRunAsync(string workerRunId, CancellationToken ct);
 }

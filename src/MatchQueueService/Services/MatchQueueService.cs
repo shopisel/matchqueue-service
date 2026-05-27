@@ -60,6 +60,73 @@ public sealed class MatchQueueService(
         return await ProcessRunProductsAsync(runId, scrapedProducts, ct);
     }
 
+    public async Task<TriggerMatchResponse> ProcessWorkerRunAsync(string workerRunId, CancellationToken ct)
+    {
+        workerRunId = (workerRunId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(workerRunId))
+        {
+            throw new ArgumentException("workerRunId is required.", nameof(workerRunId));
+        }
+
+        using var scope = logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["worker_run_id"] = workerRunId
+        });
+
+        logger.LogInformation("Match processing started (worker_run_id).");
+
+        var runIds = await _runs
+            .Find(Builders<BsonDocument>.Filter.Eq("worker_run_id", workerRunId))
+            .Sort(Builders<BsonDocument>.Sort.Ascending("started_at"))
+            .Project(Builders<BsonDocument>.Projection.Include("_id"))
+            .ToListAsync(ct);
+
+        var resolvedRunIds = runIds
+            .Select(doc => (doc.GetValue("_id", BsonNull.Value).ToString() ?? string.Empty).Trim())
+            .Where(id => id.Length > 0 && !id.Equals("BsonNull", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (resolvedRunIds.Count == 0)
+        {
+            logger.LogWarning("No scrape runs found for worker_run_id={WorkerRunId}.", workerRunId);
+            return new TriggerMatchResponse(workerRunId, 0, 0, 0, 0);
+        }
+
+        var totalProcessed = 0;
+        var totalCreated = 0;
+        var totalPricesUpserted = 0;
+        var totalNotificationsEnqueued = 0;
+
+        foreach (var runId in resolvedRunIds)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var runResult = await ProcessRunAsync(runId, ct);
+            totalProcessed += runResult.ProductsProcessed;
+            totalCreated += runResult.ProductsCreated;
+            totalPricesUpserted += runResult.PricesUpserted;
+            totalNotificationsEnqueued += runResult.NotificationsEnqueued;
+        }
+
+        var response = new TriggerMatchResponse(
+            workerRunId,
+            totalProcessed,
+            totalCreated,
+            totalPricesUpserted,
+            totalNotificationsEnqueued);
+
+        logger.LogInformation(
+            "Match processing completed (worker_run_id). worker_run_id={WorkerRunId} processed={Processed} created={Created} prices_upserted={PricesUpserted} notifications_enqueued={NotificationsEnqueued}",
+            workerRunId,
+            response.ProductsProcessed,
+            response.ProductsCreated,
+            response.PricesUpserted,
+            response.NotificationsEnqueued);
+
+        return response;
+    }
+
     private async Task<TriggerMatchResponse> ProcessRunProductsAsync(
         string runId,
         List<ScrapeProduct> scrapedProducts,

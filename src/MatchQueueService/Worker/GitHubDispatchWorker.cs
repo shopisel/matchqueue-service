@@ -103,6 +103,12 @@ public static class GitHubDispatchWorker
             var scrapers = ReadObject(payload, "scrapers");
             var scrapersOutputs = ReadObject(scrapers, "outputs");
 
+            var workerRunId =
+                ReadString(scrapersOutputs, "worker_run_id")
+                ?? ReadString(scrapersOutputs, "workerRunId")
+                ?? ReadString(payload, "worker_run_id")
+                ?? ReadString(payload, "workerRunId");
+
             var runId =
                 ReadString(scrapersOutputs, "run_id")
                 ?? ReadString(scrapersOutputs, "runId")
@@ -119,6 +125,19 @@ public static class GitHubDispatchWorker
                 ?? ReadDateTime(scrapersOutputs, "finishedAt")
                 ?? ReadDateTime(payload, "finished_at")
                 ?? ReadDateTime(payload, "finishedAt");
+
+            if (!string.IsNullOrWhiteSpace(workerRunId))
+            {
+                var result = await matchQueueService.ProcessWorkerRunAsync(workerRunId!, ct);
+                logger.LogInformation(
+                    "Worker completed. worker_run_id={WorkerRunId} processed={Processed} created={Created} prices_upserted={PricesUpserted} notifications_enqueued={NotificationsEnqueued}",
+                    workerRunId,
+                    result.ProductsProcessed,
+                    result.ProductsCreated,
+                    result.PricesUpserted,
+                    result.NotificationsEnqueued);
+                return 0;
+            }
 
             if (!string.IsNullOrWhiteSpace(runId))
             {
