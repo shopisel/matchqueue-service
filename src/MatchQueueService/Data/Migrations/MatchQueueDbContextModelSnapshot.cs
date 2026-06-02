@@ -131,6 +131,10 @@ namespace MatchQueueService.Data.Migrations
                         .HasColumnType("varchar")
                         .HasColumnName("id");
 
+                    b.Property<string>("CanonicalKey")
+                        .HasColumnType("varchar")
+                        .HasColumnName("canonical_key");
+
                     b.Property<string>("Barcode")
                         .IsRequired()
                         .HasColumnType("varchar")
@@ -154,6 +158,10 @@ namespace MatchQueueService.Data.Migrations
                         .IsRequired()
                         .HasColumnType("varchar")
                         .HasColumnName("name");
+
+                    b.HasIndex("CanonicalKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_products_canonical_key");
 
                     b.HasKey("Id");
 

@@ -32,6 +32,10 @@ public sealed class MatchQueueDbContext(DbContextOptions<MatchQueueDbContext> op
                 .HasColumnName("id")
                 .HasColumnType("varchar");
 
+            entity.Property(product => product.CanonicalKey)
+                .HasColumnName("canonical_key")
+                .HasColumnType("varchar");
+
             entity.Property(product => product.Name)
                 .HasColumnName("name")
                 .HasColumnType("varchar")
@@ -60,6 +64,10 @@ public sealed class MatchQueueDbContext(DbContextOptions<MatchQueueDbContext> op
                 .WithMany()
                 .HasForeignKey(product => product.CategoryId)
                 .HasConstraintName("FK_products_categories_category_id");
+
+            entity.HasIndex(product => product.CanonicalKey)
+                .IsUnique()
+                .HasDatabaseName("UX_products_canonical_key");
         });
 
         modelBuilder.Entity<PriceEntity>(entity =>

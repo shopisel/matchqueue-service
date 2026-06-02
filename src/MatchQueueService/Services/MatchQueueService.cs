@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using MatchQueueService.Contracts;
 using MatchQueueService.Data;
 using MatchQueueService.Data.Entities;
@@ -142,6 +143,8 @@ public sealed class MatchQueueService(
         var productsCreated = 0;
         var pricesUpserted = 0;
         var notificationsEnqueued = 0;
+        var productsByCanonicalKey = new Dictionary<string, ProductEntity>(StringComparer.OrdinalIgnoreCase);
+        var pricesByProductAndStore = new Dictionary<string, PriceEntity>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var product in scrapedProducts)
         {
@@ -149,6 +152,7 @@ public sealed class MatchQueueService(
             productsProcessed++;
 
             var name = product.ExternalName.Trim();
+            var brand = string.IsNullOrWhiteSpace(product.Brand) ? null : product.Brand.Trim();
             var storeId = product.StoreId.Trim();
             var imageUrl = (product.ImageUrl ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(storeId))
@@ -156,26 +160,60 @@ public sealed class MatchQueueService(
                 continue;
             }
 
-            var existing = await FindMatchAsync(name, storeId, imageUrl, ct);
+            var canonicalKey = BuildCanonicalKey(name, brand);
+            if (!productsByCanonicalKey.TryGetValue(canonicalKey, out var productEntity))
+            {
+                productEntity = await FindProductByCanonicalKeyAsync(canonicalKey, ct)
+                    ?? await FindLegacyProductMatchAsync(name, brand, ct);
 
-            if (existing is null)
+                if (productEntity is not null)
+                {
+                    if (string.IsNullOrWhiteSpace(productEntity.CanonicalKey))
+                    {
+                        productEntity.CanonicalKey = canonicalKey;
+                    }
+
+                    productsByCanonicalKey[canonicalKey] = productEntity;
+                }
+            }
+
+            if (productEntity is null)
             {
                 var categoryId = await ResolveCategoryIdAsync(product.CategoryId, ct);
 
-                var createdProduct = new ProductEntity
+                productEntity = new ProductEntity
                 {
                     Id = Guid.NewGuid().ToString("N"),
+                    CanonicalKey = canonicalKey,
                     Name = name,
-                    Brand = (product.Brand ?? string.Empty).Trim() is { Length: > 0 } brand ? brand : null,
+                    Brand = brand,
                     Barcode = string.Empty,
                     CategoryId = categoryId,
                     Image = imageUrl
                 };
 
-                var createdPrice = new PriceEntity
+                dbContext.Products.Add(productEntity);
+                productsByCanonicalKey[canonicalKey] = productEntity;
+
+                productsCreated++;
+            }
+
+            var priceKey = BuildPriceKey(productEntity.Id, storeId);
+            if (!pricesByProductAndStore.TryGetValue(priceKey, out var existingPrice))
+            {
+                existingPrice = await FindPriceAsync(productEntity.Id, storeId, ct);
+                if (existingPrice is not null)
+                {
+                    pricesByProductAndStore[priceKey] = existingPrice;
+                }
+            }
+
+            if (existingPrice is null)
+            {
+                existingPrice = new PriceEntity
                 {
                     Id = Guid.NewGuid().ToString("N"),
-                    ProductId = createdProduct.Id,
+                    ProductId = productEntity.Id,
                     StoreId = storeId,
                     PriceText = product.PriceText,
                     SaleText = product.SaleText,
@@ -185,29 +223,27 @@ public sealed class MatchQueueService(
                     UpdatedAt = DateTime.UtcNow
                 };
 
-                dbContext.Products.Add(createdProduct);
-                dbContext.Prices.Add(createdPrice);
-
-                productsCreated++;
+                dbContext.Prices.Add(existingPrice);
+                pricesByProductAndStore[priceKey] = existingPrice;
                 pricesUpserted++;
                 continue;
             }
 
-            var previousSaleText = existing.SaleText;
+            var previousSaleText = existingPrice.SaleText;
 
-            existing.PriceText = product.PriceText;
-            existing.SaleText = product.SaleText;
-            existing.QuantityText = product.QuantityText;
-            existing.UnitPriceText = product.UnitPriceText;
-            existing.SaleDate = product.PromotionExpiryDate;
-            existing.UpdatedAt = DateTime.UtcNow;
+            existingPrice.PriceText = product.PriceText;
+            existingPrice.SaleText = product.SaleText;
+            existingPrice.QuantityText = product.QuantityText;
+            existingPrice.UnitPriceText = product.UnitPriceText;
+            existingPrice.SaleDate = product.PromotionExpiryDate;
+            existingPrice.UpdatedAt = DateTime.UtcNow;
 
             pricesUpserted++;
 
-            if (HasNewOrChangedSale(previousSaleText, existing.SaleText))
+            if (HasNewOrChangedSale(previousSaleText, existingPrice.SaleText))
             {
                 var accounts = await dbContext.FavoriteProducts
-                    .Where(favorite => favorite.ProductId == existing.ProductId)
+                    .Where(favorite => favorite.ProductId == productEntity.Id)
                     .Select(favorite => favorite.AccountId)
                     .ToListAsync(ct);
 
@@ -217,7 +253,7 @@ public sealed class MatchQueueService(
                     {
                         Id = Guid.NewGuid().ToString("N"),
                         AccountId = accountId,
-                        ProductId = existing.ProductId,
+                        ProductId = productEntity.Id,
                         Checked = false
                     });
                     notificationsEnqueued++;
@@ -324,20 +360,39 @@ public sealed class MatchQueueService(
         return result;
     }
 
-    private async Task<PriceEntity?> FindMatchAsync(string name, string storeId, string imageUrl, CancellationToken ct)
+    private async Task<ProductEntity?> FindProductByCanonicalKeyAsync(string canonicalKey, CancellationToken ct)
+    {
+        return await dbContext.Products
+            .FirstOrDefaultAsync(product => product.CanonicalKey == canonicalKey, ct);
+    }
+
+    private async Task<ProductEntity?> FindLegacyProductMatchAsync(string name, string? brand, CancellationToken ct)
+    {
+        var normalizedName = NormalizeMatchComponent(name);
+        var normalizedBrand = NormalizeMatchComponent(brand);
+
+        var query = dbContext.Products.Where(product => EF.Functions.ILike(product.Name, name));
+
+        if (string.IsNullOrWhiteSpace(brand))
+        {
+            query = query.Where(product => string.IsNullOrWhiteSpace(product.Brand));
+        }
+        else
+        {
+            query = query.Where(product => product.Brand != null && EF.Functions.ILike(product.Brand, brand));
+        }
+
+        var candidates = await query.ToListAsync(ct);
+
+        return candidates.FirstOrDefault(product =>
+            NormalizeMatchComponent(product.Name) == normalizedName &&
+            NormalizeMatchComponent(product.Brand) == normalizedBrand);
+    }
+
+    private async Task<PriceEntity?> FindPriceAsync(string productId, string storeId, CancellationToken ct)
     {
         return await dbContext.Prices
-            .Join(
-                dbContext.Products,
-                price => price.ProductId,
-                product => product.Id,
-                (price, product) => new { price, product })
-            .Where(row =>
-                row.price.StoreId == storeId &&
-                EF.Functions.ILike(row.product.Name, name) &&
-                row.product.Image == imageUrl)
-            .Select(row => row.price)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(price => price.ProductId == productId && price.StoreId == storeId, ct);
     }
 
     private async Task<string> ResolveCategoryIdAsync(string? scrapedCategoryId, CancellationToken ct)
@@ -376,6 +431,41 @@ public sealed class MatchQueueService(
             DateTimeKind.Local => value.ToUniversalTime(),
             _ => value
         };
+    }
+
+    private static string BuildCanonicalKey(string name, string? brand)
+    {
+        return string.Join("|",
+            NormalizeMatchComponent(name),
+            NormalizeMatchComponent(brand));
+    }
+
+    private static string BuildPriceKey(string productId, string storeId)
+    {
+        return string.Join("|", productId.Trim(), storeId.Trim());
+    }
+
+    private static string NormalizeMatchComponent(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = value.Trim().Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(trimmed.Length);
+
+        foreach (var character in trimmed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.NonSpacingMark)
+            {
+                builder.Append(character);
+            }
+        }
+
+        var withoutDiacritics = builder.ToString().Normalize(NormalizationForm.FormC);
+        var collapsedWhitespace = string.Join(' ', withoutDiacritics.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return collapsedWhitespace.ToUpperInvariant();
     }
 
     private static bool HasNewOrChangedSale(string? beforeSaleText, string? afterSaleText)
