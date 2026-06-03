@@ -4,6 +4,11 @@ on:
   repository_dispatch:
   workflow_dispatch:
     inputs:
+      worker_run_id:
+        description: "Upstream worker run id to process"
+        required: false
+        type: string
+        default: ""
       run_id:
         description: "Upstream orchestrator run id to process"
         required: false

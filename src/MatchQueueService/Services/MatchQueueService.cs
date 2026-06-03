@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using MatchQueueService.Contracts;
 using MatchQueueService.Data;
 using MatchQueueService.Data.Entities;
@@ -14,6 +15,31 @@ public sealed class MatchQueueService(
     IMongoDatabase mongoDatabase,
     ILogger<MatchQueueService> logger) : IMatchQueueService
 {
+    private static readonly Regex TokenRegex = new(@"[A-Z0-9.]+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex MultipleWhitespaceRegex = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex QuantityTokenRegex = new(@"^(?<value>\d+(?:\.\d+)?)(?<unit>ML|CL|L|G|KG|MG|GR|UN|UNI|UND)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex PackQuantityRegex = new(@"^(?<count>\d+(?:\.\d+)?)X(?<value>\d+(?:\.\d+)?)(?<unit>ML|CL|L|G|KG|MG|GR)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ZeroSugarRegex = new(@"\b(ZERO|SEM|S)\s+ACUCAR\b", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NOVO",
+        "PROMO",
+        "PROMOCAO",
+        "PACK",
+        "ORIGINAL",
+        "CLASSICO",
+        "CLASSICA",
+        "FAMILIAR",
+        "LATA",
+        "GARRAFA",
+        "PET",
+        "EMBALAGEM",
+        "SABOR",
+        "EDICAO",
+        "LIMITADA"
+    };
+
     private readonly IMongoCollection<BsonDocument> _runs = mongoDatabase.GetCollection<BsonDocument>("scrape_runs");
     private readonly IMongoCollection<BsonDocument> _products = mongoDatabase.GetCollection<BsonDocument>("scrape_products");
 
@@ -160,11 +186,11 @@ public sealed class MatchQueueService(
                 continue;
             }
 
-            var canonicalKey = BuildCanonicalKey(name, brand);
+            var canonicalKey = BuildCanonicalKey(name, brand, product.QuantityText);
             if (!productsByCanonicalKey.TryGetValue(canonicalKey, out var productEntity))
             {
                 productEntity = await FindProductByCanonicalKeyAsync(canonicalKey, ct)
-                    ?? await FindLegacyProductMatchAsync(name, brand, ct);
+                    ?? await FindProductBySignatureAsync(name, brand, product.QuantityText, ct);
 
                 if (productEntity is not null)
                 {
@@ -366,12 +392,11 @@ public sealed class MatchQueueService(
             .FirstOrDefaultAsync(product => product.CanonicalKey == canonicalKey, ct);
     }
 
-    private async Task<ProductEntity?> FindLegacyProductMatchAsync(string name, string? brand, CancellationToken ct)
+    private async Task<ProductEntity?> FindProductBySignatureAsync(string name, string? brand, string? quantityText, CancellationToken ct)
     {
-        var normalizedName = NormalizeMatchComponent(name);
-        var normalizedBrand = NormalizeMatchComponent(brand);
+        var canonicalKey = BuildCanonicalKey(name, brand, quantityText);
 
-        var query = dbContext.Products.Where(product => EF.Functions.ILike(product.Name, name));
+        IQueryable<ProductEntity> query = dbContext.Products;
 
         if (string.IsNullOrWhiteSpace(brand))
         {
@@ -379,14 +404,20 @@ public sealed class MatchQueueService(
         }
         else
         {
-            query = query.Where(product => product.Brand != null && EF.Functions.ILike(product.Brand, brand));
+            query = query.Where(product =>
+                product.Brand != null &&
+                EF.Functions.ILike(product.Brand, brand));
         }
 
         var candidates = await query.ToListAsync(ct);
 
+        if (candidates.Count == 0 && !string.IsNullOrWhiteSpace(brand))
+        {
+            candidates = await dbContext.Products.ToListAsync(ct);
+        }
+
         return candidates.FirstOrDefault(product =>
-            NormalizeMatchComponent(product.Name) == normalizedName &&
-            NormalizeMatchComponent(product.Brand) == normalizedBrand);
+            BuildCanonicalKey(product.Name, product.Brand, null) == canonicalKey);
     }
 
     private async Task<PriceEntity?> FindPriceAsync(string productId, string storeId, CancellationToken ct)
@@ -433,11 +464,15 @@ public sealed class MatchQueueService(
         };
     }
 
-    private static string BuildCanonicalKey(string name, string? brand)
+    private static string BuildCanonicalKey(string name, string? brand, string? quantityText = null)
     {
-        return string.Join("|",
-            NormalizeMatchComponent(name),
-            NormalizeMatchComponent(brand));
+        var tokens = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        AddMatchTokens(tokens, name);
+        AddMatchTokens(tokens, brand);
+        AddMatchTokens(tokens, quantityText);
+
+        return string.Join("|", tokens);
     }
 
     private static string BuildPriceKey(string productId, string storeId)
@@ -445,17 +480,25 @@ public sealed class MatchQueueService(
         return string.Join("|", productId.Trim(), storeId.Trim());
     }
 
-    private static string NormalizeMatchComponent(string? value)
+    private static void AddMatchTokens(ISet<string> tokens, string? value)
+    {
+        foreach (var token in TokenizeMatchComponent(value))
+        {
+            tokens.Add(token);
+        }
+    }
+
+    private static IEnumerable<string> TokenizeMatchComponent(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            return string.Empty;
+            yield break;
         }
 
-        var trimmed = value.Trim().Normalize(NormalizationForm.FormD);
-        var builder = new StringBuilder(trimmed.Length);
+        var normalized = value.Trim().Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(normalized.Length);
 
-        foreach (var character in trimmed)
+        foreach (var character in normalized)
         {
             if (CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.NonSpacingMark)
             {
@@ -463,9 +506,173 @@ public sealed class MatchQueueService(
             }
         }
 
-        var withoutDiacritics = builder.ToString().Normalize(NormalizationForm.FormC);
-        var collapsedWhitespace = string.Join(' ', withoutDiacritics.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return collapsedWhitespace.ToUpperInvariant();
+        var withoutDiacritics = builder.ToString().Normalize(NormalizationForm.FormC).ToUpperInvariant();
+        withoutDiacritics = withoutDiacritics.Replace(',', '.');
+        withoutDiacritics = ZeroSugarRegex.Replace(withoutDiacritics, "SEM ACUCAR");
+        withoutDiacritics = MultipleWhitespaceRegex.Replace(withoutDiacritics, " ");
+
+        var rawTokens = TokenRegex.Matches(withoutDiacritics)
+            .Select(match => match.Value)
+            .ToArray();
+
+        for (var index = 0; index < rawTokens.Length; index++)
+        {
+            if (TryReadSugarToken(rawTokens, index, out var sugarToken, out var sugarConsumed))
+            {
+                yield return sugarToken;
+                index += sugarConsumed - 1;
+                continue;
+            }
+
+            if (TryReadPackQuantityToken(rawTokens, index, out var packQuantityToken, out var packQuantityConsumed))
+            {
+                yield return packQuantityToken;
+                index += packQuantityConsumed - 1;
+                continue;
+            }
+
+            var token = rawTokens[index];
+            if (StopWords.Contains(token))
+            {
+                continue;
+            }
+
+            if (TryReadQuantityToken(token, out var quantityToken))
+            {
+                yield return quantityToken;
+                continue;
+            }
+
+            if (token.Length == 1 && !char.IsDigit(token[0]))
+            {
+                continue;
+            }
+
+            yield return token;
+        }
+    }
+
+    private static bool TryReadSugarToken(IReadOnlyList<string> tokens, int index, out string token, out int consumedTokens)
+    {
+        token = string.Empty;
+        consumedTokens = 0;
+
+        if (index + 1 >= tokens.Count)
+        {
+            return false;
+        }
+
+        var first = tokens[index];
+        var second = tokens[index + 1];
+
+        if ((first == "ZERO" || first == "SEM" || first == "S") && second == "ACUCAR")
+        {
+            token = "SEM_ACUCAR";
+            consumedTokens = 2;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadPackQuantityToken(IReadOnlyList<string> tokens, int index, out string token, out int consumedTokens)
+    {
+        token = string.Empty;
+        consumedTokens = 0;
+
+        if (index + 2 >= tokens.Count)
+        {
+            return false;
+        }
+
+        if (!TryNormalizeDecimalToken(tokens[index], out var packCount))
+        {
+            return false;
+        }
+
+        if (tokens[index + 1] != "X")
+        {
+            return false;
+        }
+
+        if (TryReadQuantityToken(tokens[index + 2], out var packedQuantity))
+        {
+            token = $"{packCount}X{packedQuantity}";
+            consumedTokens = 3;
+            return true;
+        }
+
+        if (index + 3 < tokens.Count &&
+            TryNormalizeDecimalToken(tokens[index + 2], out var quantityValue) &&
+            IsQuantityUnitToken(tokens[index + 3], out var unit))
+        {
+            token = $"{packCount}X{quantityValue}{unit}";
+            consumedTokens = 4;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadQuantityToken(string token, out string canonicalToken)
+    {
+        canonicalToken = string.Empty;
+
+        var match = QuantityTokenRegex.Match(token.Replace(',', '.'));
+        if (!match.Success)
+        {
+            var packMatch = PackQuantityRegex.Match(token.Replace(',', '.'));
+            if (!packMatch.Success)
+            {
+                return false;
+            }
+
+            canonicalToken = $"{NormalizeDecimalPart(packMatch.Groups["count"].Value)}X{NormalizeDecimalPart(packMatch.Groups["value"].Value)}{packMatch.Groups["unit"].Value}";
+            return true;
+        }
+
+        canonicalToken = $"{NormalizeDecimalPart(match.Groups["value"].Value)}{match.Groups["unit"].Value}";
+        return true;
+    }
+
+    private static bool TryNormalizeDecimalToken(string token, out string normalizedToken)
+    {
+        normalizedToken = string.Empty;
+
+        if (!decimal.TryParse(token.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return false;
+        }
+
+        normalizedToken = parsed % 1 == 0
+            ? parsed.ToString("0", CultureInfo.InvariantCulture)
+            : parsed.ToString(CultureInfo.InvariantCulture);
+        return true;
+    }
+
+    private static bool IsQuantityUnitToken(string token, out string unit)
+    {
+        var normalized = token.Trim().ToUpperInvariant();
+        if (normalized is "ML" or "CL" or "L" or "G" or "KG" or "MG" or "GR" or "UN" or "UNI" or "UND")
+        {
+            unit = normalized;
+            return true;
+        }
+
+        unit = string.Empty;
+        return false;
+    }
+
+    private static string NormalizeDecimalPart(string value)
+    {
+        if (decimal.TryParse(value.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed % 1 == 0
+                ? parsed.ToString("0", CultureInfo.InvariantCulture)
+                : parsed.ToString(CultureInfo.InvariantCulture);
+        }
+
+        return value.Replace(',', '.');
     }
 
     private static bool HasNewOrChangedSale(string? beforeSaleText, string? afterSaleText)
