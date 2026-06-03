@@ -27,6 +27,10 @@ public sealed class MatchQueueService(
         "PROMO",
         "PROMOCAO",
         "PACK",
+        "PINGO",
+        "DOCE",
+        "EMB",
+        "LT",
         "ORIGINAL",
         "CLASSICO",
         "CLASSICA",
@@ -560,7 +564,7 @@ public sealed class MatchQueueService(
                 continue;
             }
 
-            var token = rawTokens[index];
+            var token = NormalizeLooseToken(rawTokens[index]);
             if (StopWords.Contains(token))
             {
                 continue;
@@ -702,6 +706,14 @@ public sealed class MatchQueueService(
         }
 
         return value.Replace(',', '.');
+    }
+
+    private static string NormalizeLooseToken(string token)
+    {
+        return token
+            .Trim()
+            .Trim('.', ',', ';', ':', '/', '\\')
+            .ToUpperInvariant();
     }
 
     private static bool HasNewOrChangedSale(string? beforeSaleText, string? afterSaleText)
